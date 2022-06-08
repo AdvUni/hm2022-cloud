@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dyndns
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  namespace: dyndns
+  name: dyndns-job
+spec:
+  schedule: "13 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: cron
+            image: busybox
+            imagePullPolicy: IfNotPresent
+            env:
+              - name: SECRET_HOSTNAME
+                valueFrom:
+                  secretKeyRef:
+                    name: dyndns-secret
+                    key: hostname
+              - name: SECRET_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: dyndns-secret
+                    key: password
+              - name: URL
+                value: "https://dynamicdns.key-systems.net/update.php"
+            command:
+            - /bin/sh
+            - -c
+            - wget -O - "${URL}?hostname=${SECRET_HOSTNAME}&password=${SECRET_PASSWORD}&ip=auto"
+          restartPolicy: OnFailure
+

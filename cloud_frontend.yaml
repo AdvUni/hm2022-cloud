@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: nextcloud
+    tier: frontend
+  name: nextcloud
+  namespace: cloud
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nextcloud
+      tier: frontend
+  template:
+    metadata:
+      labels:
+        app: nextcloud
+        tier: frontend
+    spec:
+      containers:
+      - env:
+        - name: TZ
+          value: Europe/Berlin
+        - name: DEBUG
+          value: "false"
+        - name: NEXTCLOUD_URL
+          value: https://cloud.au-lab.de
+        - name: NEXTCLOUD_UPLOAD_MAX_FILESIZE
+          value: 4096M
+        - name: NEXTCLOUD_MAX_FILE_UPLOADS
+          value: "20"
+        - name: MYSQL_DATABASE
+          value: nextcloud
+        - name: MYSQL_HOST
+          value: mariadb
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mariadb-secret
+              key: userpassword
+        - name: MYSQL_USER
+          value: nextcloud
+        - name: APACHE_DISABLE_REWRITE_IP
+          value: "1"
+        - name: TRUSTED_PROXIES
+          value: 10.0.0.0/8
+        name: nc
+        image: nextcloud
+        ports:
+        - containerPort: 80
+          protocol: TCP
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /var/www/html
+          name: nextcloud-data
+      restartPolicy: Always
+      volumes:
+        - name: nextcloud-data
+          hostPath:
+            path: "/k8s-data/nextcloud"
+            type: Directory
