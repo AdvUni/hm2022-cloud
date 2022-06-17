@@ -163,6 +163,27 @@ Anschließend sollte sich der Cluster schon folgendermaßen melden:
     NAME            STATUS   ROLES                  AGE     VERSION
     raspberrypi     Ready    control-plane,master   6m51s   v1.21.5+k3s2
 
+Man sollte nun auch einmal den integrierten Check durchlaufen lassen, der einen darauf hinweist falls an der Linux-Konfiguration noch etwas geändert werden muss:
+
+    pi@raspberrypo:~$ k3s check-config
+    Verifying binaries in /var/lib/rancher/k3s/data/31ff0fd447a47323a7c863dbb0a3cd4c/bin:
+    ...
+    System:
+    - swap: disabled
+    - routes: ok
+    ...
+    Generally Necessary:
+    - cgroup hierarchy: cgroups Hybrid mounted, cpuset|memory controllers status: good
+    - apparmor: enabled and tools installed
+    ...
+    Optional Features:
+    - CONFIG_USER_NS: enabled
+    - CONFIG_SECCOMP: enabled
+    ...
+    STATUS: pass
+
+Falls dort rot markierte Meldungen auftauchen sollte man diese korrigieren/anpassen (Google hilft im Zweifelsfall). Gelbe Warnungen können ignoriert werden, wichtig ist dass am Ende `pass` auftaucht.
+
 ## Kubernetes Grundlagen
 
 Folgende Begriffe tauchen in diesem Dokument immer wieder auf und werden hier kurz beschrieben:
