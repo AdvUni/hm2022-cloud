@@ -206,4 +206,126 @@ Man kann k8s-Objekte auch über `kubectl` anlegen, bearbeiten und löschen, wobe
 
 Wichtig, beim Löschen von Namespaces werden auch sämtliche Objekte innerhalb dieses Namespaces gelöscht!
 
+## Cronjobs waren gestern
+
+Zu Hause hat man meist eine dynamische IP, was bedeutet dass man eigentlich regelmäßig (z.B. jede Stunde) die IP Adresse, auf die die DNS Domäne zeigt, aktualisieren muss. Dazu hat man klassischerweise einen cronjob benutzt, den man in Linux über die Datei `/etc/crontab` (oder eine Variante davon) konfiguriert.
+
+K8s unterstützt uns auch hierbei, so dass man nicht auf die Linux cron Konfiguration angewiesen ist. Dazu erzeugt man ein Objekt vom Typ `CronJob`:
+
+    apiVersion: batch/v1
+    kind: CronJob
+    metadata:
+      namespace: dyndns
+      name: dyndns-job
+    spec:
+      schedule: "13 * * * *"
+      jobTemplate:
+        spec:
+          template:
+            spec:
+              containers:
+              - name: cron
+                image: busybox
+                imagePullPolicy: IfNotPresent
+                env:
+                  - name: SECRET_HOSTNAME
+                    valueFrom:
+                      secretKeyRef:
+                        name: dyndns-secret
+                        key: hostname
+                  - name: SECRET_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: dyndns-secret
+                        key: password
+                  - name: URL
+                    value: "https://dynamicdns.key-systems.net/update.php"
+                command:
+                - /bin/sh
+                - -c
+                - wget -O - "${URL}?hostname=${SECRET_HOSTNAME}&password=${SECRET_PASSWORD}&ip=auto"
+              restartPolicy: OnFailure
+
+Wir geben dem CronJob eine Schedule im standard UNIX Crontab Format mit, hier `13 * * * *`, was so viel bedeutet wie "13 Minuten nach jeder vollen Stunde". Außerdem definieren wir ein Pod-Template, welches der CronJob hernimmt um das tatsächliche Kommando auszuführen. Dazu dient hier ein BusyBox Container, dessen Standard-Kommando (eine Shell) durch einen Aufruf von `wget` ersetzt wird. Die Parameter für den Aufruf bekommen wir als Umgebungsvariable aus dem dazugehörigen Secret, welches wir folgendermaßen konfigurieren:
+
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      namespace: dyndns
+      name: dyndns-secret
+    stringData:
+      hostname: cloud.au-lab.de
+      password: 1secret234!
+
+Via `kubectl apply` spielen wir die beiden Manifest-Dateien in den Cluster ein:
+
+    pi@raspberrypi:~ $ kubectl apply -f dyndns.yaml
+    namespace/dyndns created
+    cronjob.batch/dyndns-job created
+    pi@raspberrypi:~ $ kubectl apply -f dyndns-secret.yaml
+    secret/dyndns-secret created
+
+Um nun nicht warten zu müssen, bis der Job das nächste mal automatisch startet, kann man ihn einmalig von Hand ausführen. Wichtig ist hier die Unterscheidung zwischen dem *CronJob*, welcher die Schedule definiert und den auszuführenden Pod, und dem *Job*, welcher einer aisgeführten Instanz eines Pods entspricht. Wir erzeugen also einen manuellen Job aus dem CronJob:
+
+    pi@raspberrypi:~ $ kubectl -n dyndns create job --from=cronjob/dyndns-job testjob1
+    job.batch/testjob1 created
+
+Um zu überprüfen ob der Job sauber ausgeführt wurde können wir ihn mit `kubectl describe` ansehen oder mit `kubectl logs` seine Ausgaben anschauen:
+
+    pi@raspberrypi:~$ kubectl -n dyndns-updater describe job/testjob1
+    Name:           testjob1
+    Namespace:      dyndns
+    Selector:       controller-uid=219fa210-0e7a-4f42-926b-ddf4a73edc9e
+    Labels:         controller-uid=219fa210-0e7a-4f42-926b-ddf4a73edc9e
+                    job-name=testjob1
+    Annotations:    cronjob.kubernetes.io/instantiate: manual
+    Parallelism:    1
+    Completions:    1
+    Start Time:     Fri, 12 Nov 2021 16:42:55 +0100
+    Completed At:   Fri, 12 Nov 2021 16:42:59 +0100
+    Duration:       4s
+    Pods Statuses:  0 Running / 1 Succeeded / 0 Failed
+    Pod Template:
+      Labels:  controller-uid=219fa210-0e7a-4f42-926b-ddf4a73edc9e
+               job-name=testjob1
+      Containers:
+       cron:
+        Image:      busybox
+        Port:       <none>
+        Host Port:  <none>
+        Command:
+          /bin/sh
+          -c
+          wget -O - "${URL}?hostname=${SECRET_HOSTNAME}&password=${SECRET_PASSWORD}&ip=auto"
+        Environment:
+          SECRET_HOSTNAME:  <set to the key 'hostname' in secret 'dyndns-web-secret'>  Optional: false
+          SECRET_PASSWORD:  <set to the key 'password' in secret 'dyndns-web-secret'>  Optional: false
+          URL:              https://dynamicdns.key-systems.net/update.php
+        Mounts:             <none>
+      Volumes:              <none>
+    Events:
+      Type    Reason            Age   From            Message
+      ----    ------            ----  ----            -------
+      Normal  SuccessfulCreate  51s   job-controller  Created pod: testjob1-dplw5
+      Normal  Completed         47s   job-controller  Job completed
+
+    pi@raspberrypi:~$ kubectl -n dyndns logs job/testjob1
+    wget: note: TLS certificate validation not implemented
+    [RESPONSE]
+    code = 200
+    description = Command completed successfully
+    queuetime = 0
+    runtime = 0.099
+    EOF
+
+Im Output sehen wir die Rückmeldung des API Servers unseres DNS Providers, das IP Update lief also problemlos durch.
+
+Der Cronjob bewahrt außerdem die letzten 3 Jobs auf bevor deren Pods gelöscht werden, so dass man auch noch von älteren Jobs die Logs ansehen kann. Diese sieht man mit `kubectl get job`:
+
+    pi@raspberrypi:~ $ kubectl get job -n dyndns
+    NAME                            COMPLETIONS   DURATION   AGE
+    job.batch/testjob1              1/1           4s         90m
+    job.batch/dyndns-job-27278931   1/1           1s         60s
+    job.batch/dyndns-job-27278893   1/1           1s         41s
+
 
