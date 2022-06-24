@@ -319,8 +319,8 @@ Um zu überprüfen ob der Job sauber ausgeführt wurde können wir ihn mit `kube
           -c
           wget -O - "${URL}?hostname=${SECRET_HOSTNAME}&password=${SECRET_PASSWORD}&ip=auto"
         Environment:
-          SECRET_HOSTNAME:  <set to the key 'hostname' in secret 'dyndns-web-secret'>  Optional: false
-          SECRET_PASSWORD:  <set to the key 'password' in secret 'dyndns-web-secret'>  Optional: false
+          SECRET_HOSTNAME:  <set to the key 'hostname' in secret 'dyndns-secret'>  Optional: false
+          SECRET_PASSWORD:  <set to the key 'password' in secret 'dyndns-secret'>  Optional: false
           URL:              https://dynamicdns.key-systems.net/update.php
         Mounts:             <none>
       Volumes:              <none>
@@ -349,4 +349,177 @@ Der Cronjob bewahrt außerdem die letzten 3 Jobs auf bevor deren Pods gelöscht 
     job.batch/dyndns-job-27278931   1/1           1s         60s
     job.batch/dyndns-job-27278893   1/1           1s         41s
 
+# NextCloud
 
+NextCloud besteht aus 2 Teilen, einem Frontend (Webserver, NextCloud Software, Speicherort für hochgeladene Dateien/Medien) und einem Backend (SQL Datenbank). Diese beiden Teile werden als separate Deployments innerhalb eines Namespaces ausgerollt, angefangen mit dem Backend.
+
+## NextCloud Backend
+
+Für die Datenbank im Backend von NextCloud verwenden wir MariaDB, und zwar in der Version 10.7, diese ist getestet und supported, und funktioniert mit NextCloud einwandfrei.
+
+Wir nutzen also folgendes Deployment, welches dafür sorgt dass immer genau ein MariaDB Pod im Cluster läuft (der Parameter `replicas: 1`):
+
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: cloud
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      labels:
+        app: nextcloud
+        tier: backend
+      name: mariadb
+      namespace: cloud
+    spec:
+      replicas: 1
+      strategy:
+        type: Recreate
+      selector:
+        matchLabels:
+          app: nextcloud
+          tier: backend
+      template:
+        metadata:
+          labels:
+            app: nextcloud
+            tier: backend
+        spec:
+          containers:
+          - name: mariadb
+            image: mariadb:10.7
+            env:
+            - name: MYSQL_DATABASE
+              value: nextcloud
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-secret
+                  key: userpassword
+            - name: MYSQL_USER
+              value: nextcloud
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-secret
+                  key: rootpassword
+            ports:
+            - containerPort: 3306
+              name: mariadb
+            volumeMounts:
+            - mountPath: /var/lib/mysql
+              name: mariadb-data
+          restartPolicy: Always
+          volumes:
+          - name: mariadb-data
+            hostPath:
+              path: "/k8s-data/db"
+              type: Directory
+
+Das Deployment bekommt die Metadaten `app: nextcloud` sowie `tier: backend` mit, über die wir nachher die Datenbank in einem Service addressieren können.
+Weiterhin geben wir dem Pod ein statisches Volume mit, welches auf unserem Host unter `/k8s-data/db` liegt; dort wird die Datenbank abgelegt, so dass sie auch einen Neustart des Pods überlebt.
+Der MariaDB Pod legt beim ersten Start auch gleich einen User an, dessen Passwort holen wir aus einem Secret, welches zusätzlich auch das root-Passwort für den SQL Dienst beinhaltet. Das Secret wird später auch im Frontend genutzt, um die Verbindung über den korrekten User herzustellen. Hier ist das YAML Manifest für das Secret:
+
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      namespace: cloud
+      name: mariadb-secret
+    stringData:
+      rootpassword: secret123password456
+      userpassword: user1password2cloud
+
+Nun spielen wir diese beiden Manifest Dateien in den Cluster ein und warten einen Moment, bis die Container aus dem DockerHub heruntergeladen wurden.
+
+    pi@raspberrypi:~ $ kubectl apply -f cloud_backend.yaml
+    namespace/cloud created
+    deployment/mariadb created
+    pi@raspberrypi:~ $ kubectl apply -f cloud_secret.yaml
+    secret/mariadbsecret created
+    pi@raspberrypi:~ $ ls -l /k8s-data/db | grep ^d
+    drwx------ 2 999 spi      4096 Nov 20 21:56 mysql
+    drwx------ 2 999 spi     12288 Nov 20 22:05 nextcloud
+    drwx------ 2 999 spi      4096 Nov 20 21:56 performance_schema
+
+Wir sehen dass (nach einigen Sekunden/Minuten) Datenbank-Dateien unter `/k8s-data/db` angelegt werden, dies zeigt, dass unsere Datenbank korrekt gestartet wurde.
+
+Wir können uns nun auch testweise mit dem Datenbankserver verbinden, indem wir die interne IP des Pods beim Verbindungsaufbau angeben:
+
+    pi@raspberrypi:~ $ kubectl get pod -n cloud -o wide
+    NAME                       READY   STATUS    RESTARTS   AGE    IP           NODE
+    mariadb-857cf4db5f-n4ng2   1/1     Running   0          4m3s   10.42.0.12   raspberrypi
+    pi@raspberrypi:~ $ mysql -h 10.42.0.12 -u root -p
+    Enter password: 
+    Welcome to the MariaDB monitor.  Commands end with ; or \g.
+    Your MariaDB connection id is 5
+    Server version: 10.7.4-MariaDB-1:10.7.4+maria~focal mariadb.org binary distribution
+    
+    Copyright (c) 2000, 2018, Oracle, MariaDB Corporation Ab and others.
+    
+    Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+    
+    MariaDB [(none)]> [ctrl-d]
+
+Wenn nun allerdings der Pod stirbt, zum Beispiel durch einen Softwarefehler oder durch Ausfall des Nodes, auf dem er läuft, wird sich das Deployment automatisch darum kümmern, dass der Pod neu gestartet wird. Allerdings bekommt er dabei eine neue IP Adresse, wie wir sehr leicht nachstellen können:
+
+    pi@raspberrypi:~ $ kubectl -n cloud delete pod mariadb-857cf4db5f-n4ng2
+    pod "mariadb-857cf4db5f-n4ng2" deleted
+    pi@raspberrypi:~ $ kubectl get pods -n cloud -o wide
+    NAME                       READY   STATUS    RESTARTS   AGE   IP           NODE
+    mariadb-857cf4db5f-l4r6s   1/1     Running   0          3s    10.42.0.13   raspberrypi
+
+Somit bekommen wir spätestens jetzt ein Problem, wenn wir auf die Datenbank zugreifen möchten: Wie bekommt das Frontend mit, dass es sich nun auf eine andere IP connecten soll?
+
+Dazu dienen in Kubernetes die sogenannten *Services*. Diese richten eine permanente IP ein, und sorgen dafür, dass alle Zugriffe auf diese IP an den dahinterliegenden Pod weitergereicht werden. Falls mehrere potenzielle Pods existieren sorgt der Service auch noch für ein Loadbalancing.
+
+Folgendes YAML Manifest definiert einen Service für unsere Datenbank im Backend:
+
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: mariadb
+      namespace: cloud
+      labels:
+        app: nextcloud
+        tier: backend
+    spec:
+      ports:
+        - protocol: TCP
+          port: 3306
+      selector:
+        app: nextcloud
+        tier: backend
+
+Im unteren Abschnitt, `spec`, sehen wir zum einen den TCP Port, den der Service benutzt (hier der MySQL Port 3306), sowie einen *Selector*, welcher die potenziellen Pods im Backend auswählt, an die der Traffic weitergeleitet werden soll. Hier wählen wir die Pods anhand ihrer Metadaten aus, welche den Pods oben im Deployment mitgegeben wurden.
+Dadurch sind Services nicht an Deployments gebunden sondern können übergreifend auf alle Pods im Namespace zugreifen, was Applikations-Updates sehr komfortabel möglich macht.
+
+Nachdem wir diesen Service in den Cluster einspielen können wir unsere MySQL Verbindung ständig zu der festen IP des Services aufbauen, auch wenn sich die IP der Pods dahinter ändert:
+
+    pi@raspberrypi:~ $ kubectl apply -f cloud_backend_service.yaml
+    service/mariadb created
+    
+    pi@raspberrypi:~ $ kubectl get all -n cloud -o wide
+    NAME                           READY   STATUS    RESTARTS   AGE    IP           NODE
+    pod/mariadb-857cf4db5f-l4r6s   1/1     Running   0          3m7s   10.42.0.13   raspberrypi
+    
+    NAME              TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+    service/mariadb   ClusterIP   10.43.35.230   <none>        3306/TCP   10s   app=nextcloud,tier=backend
+    
+    NAME                      READY   UP-TO-DATE   AVAILABLE   AGE    CONTAINERS   IMAGES         SELECTOR
+    deployment.apps/mariadb   1/1     1            1           7m1s   mariadb      mariadb:10.7   app=nextcloud,tier=backend
+    
+    pi@raspberrypi:~ $ kubectl delete pod -n cloud mariadb-857cf4db5f-l4r6s
+    pod "mariadb-857cf4db5f-l4r6s" deleted
+    
+    pi@raspberrypi:~ $ kubectl get all -n cloud -o wide
+    NAME                           READY   STATUS    RESTARTS   AGE  IP           NODE
+    pod/mariadb-857cf4db5f-k2t5k   1/1     Running   0          5s   10.42.0.14   raspberrypi
+    
+    NAME              TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+    service/mariadb   ClusterIP   10.43.35.230   <none>        3306/TCP   10s   app=nextcloud,tier=backend
+    
+    NAME                      READY   UP-TO-DATE   AVAILABLE   AGE    CONTAINERS   IMAGES         SELECTOR
+    deployment.apps/mariadb   1/1     1            1           7m1s   mariadb      mariadb:10.7   app=nextcloud,tier=backend
+
+Man sieht dass sich hier zwar die IP des Pods ändert, die feste IP des Services aber nicht.
