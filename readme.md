@@ -522,4 +522,193 @@ Nachdem wir diesen Service in den Cluster einspielen können wir unsere MySQL Ve
     NAME                      READY   UP-TO-DATE   AVAILABLE   AGE    CONTAINERS   IMAGES         SELECTOR
     deployment.apps/mariadb   1/1     1            1           7m1s   mariadb      mariadb:10.7   app=nextcloud,tier=backend
 
-Man sieht dass sich hier zwar die IP des Pods ändert, die feste IP des Services aber nicht.
+Man sieht dass sich hier zwar die IP des Pods ändert, die feste IP des Services (10.43.35.230) aber nicht.
+
+## NextCloud Frontend
+
+Das Frontend ist ähnlich aufgebaut wie das Backend: Ein Deployment, welches einen einzelnen Pod mit dem korrekten NextCloud-Image verwaltet, sowie ein Service, der die HTTP Schnittstelle im Cluster verfügbar macht.
+
+Zuerst das Manifest des Deployments, welches über diverse Umgebungsvariablen (welche auf der [Homepage](https://hub.docker.com/_/nextcloud) beschrieben sind) konfiguriert wird:
+
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      labels:
+        app: nextcloud
+        tier: frontend
+      name: nextcloud
+      namespace: cloud
+    spec:
+      replicas: 1
+      strategy:
+        type: Recreate
+      selector:
+        matchLabels:
+          app: nextcloud
+          tier: frontend
+      template:
+        metadata:
+          labels:
+            app: nextcloud
+            tier: frontend
+        spec:
+          containers:
+          - env:
+            - name: TZ
+              value: Europe/Berlin
+            - name: DEBUG
+              value: "false"
+            - name: NEXTCLOUD_URL
+              value: https://cloud.au-lab.de
+            - name: NEXTCLOUD_UPLOAD_MAX_FILESIZE
+              value: 4096M
+            - name: NEXTCLOUD_MAX_FILE_UPLOADS
+              value: "20"
+            - name: MYSQL_DATABASE
+              value: nextcloud
+            - name: MYSQL_HOST
+              value: mariadb
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-secret
+                  key: userpassword
+            - name: MYSQL_USER
+              value: nextcloud
+            - name: APACHE_DISABLE_REWRITE_IP
+              value: "1"
+            - name: TRUSTED_PROXIES
+              value: 10.0.0.0/8
+            name: nc
+            image: nextcloud
+            ports:
+            - containerPort: 80
+              protocol: TCP
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+            - mountPath: /var/www/html
+              name: nextcloud-data
+          restartPolicy: Always
+          volumes:
+            - name: nextcloud-data
+              hostPath:
+                path: "/k8s-data/nextcloud"
+                type: Directory
+
+Man sieht hier, dass wir das Passwort für die Backend Datenbank aus dem gleichen Secret holen, mit dem die Datenbank ausgerollt wurde. Dadurch ist sichergestellt, dass beim Passwort kein Tippfehler passieren kann. Weiterhin wird der Host für die Datenbank auf `mariadb` gesetzt. Dieser Name ist im Cluster-internen DNS registriert, da es einen gleichnamigen Service gibt (der Service des Backends). Dadurch ist keine interne IP Adresse in der Konfiguration notwendig.
+
+Als Datenspeicherort wird hier `/k8s-data/nextcloud` gewählt, das Verzeichnis muss bereits existieren, sonst startet der Pod nicht.
+
+Der passende Service dazu selektiert nun den Container anhand der Metadaten `tier=frontend` sowie `app=nextcloud`:
+
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: nextcloud
+      namespace: cloud
+      labels:
+        app: nextcloud
+    spec:
+      ports:
+        - protocol: TCP
+          port: 80
+      selector:
+        app: nextcloud
+        tier: frontend
+
+Das Einspielen der Manifests in den Cluster ist schnell getan:
+    pi@raspberrypi:~ $ kubectl apply -f cloud_frontend.yaml 
+    deployment.apps/nextcloud created
+    pi@raspberrypi:~ $ kubectl apply -f cloud_frontend_service.yaml 
+    service/nextcloud created
+
+Man kann nun leicht prüfen, dass innerhalb des Clusters die NextCloud Webseite bereits zugreifbar ist, wenn man sie über die passende IP des Services aufruft:
+
+    pi@raspberrypi:~ $ kubectl get all -n cloud
+    NAME                            READY   STATUS    RESTARTS   AGE
+    pod/mariadb-857cf4db5f-n4ng2    1/1     Running   0          36m
+    pod/nextcloud-c4b779986-vfz6v   1/1     Running   0          46s
+
+    NAME                TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
+    service/mariadb     ClusterIP   10.43.35.230   <none>        3306/TCP   33m
+    service/nextcloud   ClusterIP   10.43.145.42   <none>        80/TCP     2s
+
+    NAME                        READY   UP-TO-DATE   AVAILABLE   AGE
+    deployment.apps/mariadb     1/1     1            1           40m
+    deployment.apps/nextcloud   1/1     1            1           46s
+
+    NAME                                  DESIRED   CURRENT   READY   AGE
+    replicaset.apps/mariadb-857cf4db5f    1         1         1       40m
+    replicaset.apps/nextcloud-c4b779986   1         1         1       46s
+    
+    pi@raspberrypi: $ curl http://10.43.145.42 | head -10
+    <!DOCTYPE html>
+    <html class="ng-csp" data-placeholder-focus="false" lang="en" data-locale="en">
+    <head data-requesttoken="ysqOjFjBOo3EShajV9Fy5w/0E=">
+    <meta charset="utf-8">
+    <title>Nextcloud</title>
+
+## Der Zugang zur Außenwelt
+
+Wir möchten das Frontend aber ja von außerhalb des Clusters zugreifbar machen. Dazu benötigen wir einen Ingress. Dieser gibt einen Service außerhalb des Clusters frei. Dafür nutzt er, je nach installierter k8s-Variante, einen bestimmten *Ingress-Controller*. Bei k3s ist dies *Traefik*.
+
+Dieses Manifest erstellt einen Ingress für unser Frontend:
+
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: cloud-ingress
+      namespace: cloud
+      annotations:
+        kubernetes.io/ingress.class: "traefik"
+    spec:
+      rules:
+      - host: cloud.au-lab.de
+        http:
+          paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nextcloud
+                port:
+                  number: 80
+
+Ein Ingress kann mehrere Features verwenden, um über eine einzelne öffentliche IP mehrere Dienste zur Verfügung zu stellen:
+
+* Über Virtuelle Server (SNI, Server Name Identification) kann ein Request an unterschiedliche Services weitergereicht werden, je nachdem über welchen Hostnamen der Request in den Cluster hineinkommt, selbst wenn die IP Adresse dieselbe ist. Dazu wird der HTTP Header `Host: cloud.au-lab.de` hergezogen. Deshalb muss der Hostname hier in der Konfiguration der Traefik-Regeln (*rules*) hinterlegt werden.
+* Anschließend kann optional noch Path-Based Routing verwendet werden, um unterschiedliche URL-Pfade auf demselben Host auf unterschiedliche Services zu leiten, beispielsweise `http://cloud.au-lab.de/foo` auf Service A, und `http://cloud.au-lab.de/bar` auf Service B
+
+In unserem Fall nutzen wir kein Path-Based-Routing, deshalb wird als Pfad in der Konfiguration nur `/` hinterlegt.
+
+Wir spielen dieses YAML Manifest in den Cluster ein:
+
+    pi@raspberrypi:~ $ kubectl apply -f cloud_ingress.yaml 
+    ingress.networking.k8s.io/cloud-ingress created
+
+Nun können wir bereits über den Hostnamen von außen auf unsere NextCloud Instanz zugreifen.
+
+Interessant ist, dass sowohl HTTP als auch HTTPS schon funktionieren, da Traefik standardmäßig jeden Ingress nicht auch auf Port 443 publiziert, allerdings mit einem selbstsignierten Zertifikat.
+
+Ein Zugriff über die IP Adresse ist hingegen nicht möglich, da wir dafür im Ingress keine Regel hinterlegt haben. Daher bekommen wir hier nur die Standard-Fehlerseite von Traefik angezeigt.
+
+## Absicherung per Let's Encrypt
+
+Als letzter Schritt fehlt nun nur noch die Absicherung der Webseite über ein gültiges TLS Zertifikat. Dieses bekommen wir kostenlos und automatisch von [Let's Encrypt](https://letsencrypt.org) ausgestellt. Da die dort erzeugten Zertifikate nur 90 Tage gültig sind und somit regelmäßig erneuert werden müssen, ist eine Automatisierung der Zertifikatsausstellung Pflicht. In Kubernetes übernimmt das ein Dienst namens [cert-manager](https://cert-manager.io/).
+
+Die gesamte Konfiguration von cert-manager kann über ein einziges YAML Manifest im Cluster installiert werden, welches unter https://github.com/cert-manager/cert-manager/releases/download/v1.8.2/cert-manager.yaml heruntergeladen werden kann (aktuelle Version 1.8.2 zum Stand dieser Dokumentation). Man kann diese Datei entweder erst herunterladen, oder aber direkt aus dem Internet in den Cluster einspielen:
+
+    pi@raspberrypi:~ $ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.8.2/cert-manager.yaml
+    namespace/cert-manager created
+    customresourcedefinition.apiextensions.k8s.io/certificaterequests.cert-manager.io created
+    customresourcedefinition.apiextensions.k8s.io/certificates.cert-manager.io created
+    customresourcedefinition.apiextensions.k8s.io/challenges.acme.cert-manager.io created
+    ...
+    deployment.apps/cert-manager-webhook created
+    mutatingwebhookconfiguration.admissionregistration.k8s.io/cert-manager-webhook created
+    validatingwebhookconfiguration.admissionregistration.k8s.io/cert-manager-webhook created
+
+Nach ein paar Sekunden bis Minuten sollte der Dienst einsatzbereit sein.
+
+
