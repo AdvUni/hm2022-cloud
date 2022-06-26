@@ -48,7 +48,7 @@ spec:
         - name: TRUSTED_PROXIES
           value: 10.0.0.0/8
         name: nc
-        image: nextcloud
+        image: nextcloud:23
         ports:
         - containerPort: 80
           protocol: TCP
