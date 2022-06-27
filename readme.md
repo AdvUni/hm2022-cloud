@@ -708,7 +708,141 @@ Die gesamte Konfiguration von cert-manager kann über ein einziges YAML Manifest
     deployment.apps/cert-manager-webhook created
     mutatingwebhookconfiguration.admissionregistration.k8s.io/cert-manager-webhook created
     validatingwebhookconfiguration.admissionregistration.k8s.io/cert-manager-webhook created
+    pi@raspberrypi:~ $
 
 Nach ein paar Sekunden bis Minuten sollte der Dienst einsatzbereit sein.
 
+Um das tatsächliche Ausstellen von Zertifikaten kümmert sich im cert-manager ein sogenannter *Issuer* bzw. *ClusterIssuer*. Dieser spricht mit den API Endpunkten von Let's Encrypt, sorgt dafür dass die Challenges gelöst werden und installiert nachher die Zertifikate im Ingress.
+
+In unserem Fall installieren wir zwei Issuer, und zwar einen für das produktive API von Let's Encrypt, und einen für das Test- bzw. Staging-API. Letzteres dient zum Testen der Zertifikats-Infrastruktur und der Automatisierungsprozesse, da das produktiv-API ein starkes Rate-Limit hat, und somit bei Tests eventuell die IP geblockt wird. Erst wenn sichergestellt ist dass die Automatisierung in Kubernetes sauber funktioniert sollte man die Zertifikate auf Produktiv-Zertifikate umstellen.
+
+Das Manifest für die beiden Issuer (`issuer.yaml`):
+
+    apiVersion: cert-manager.io/v1
+    kind: ClusterIssuer
+    metadata:
+      name: letsencrypt-staging
+    spec:
+      acme:
+        # The ACME server URL
+        server: https://acme-staging-v02.api.letsencrypt.org/directory
+        # Email address used for ACME registration
+        email: meine.email@gmail.com
+        # Name of a secret used to store the ACME account private key
+        privateKeySecretRef:
+          name: letsencrypt-staging-secret
+        # Enable the HTTP-01 challenge provider
+        solvers:
+        - http01:
+            ingress:
+              class: traefik
+    ---
+    apiVersion: cert-manager.io/v1
+    kind: ClusterIssuer
+    metadata:
+      name: letsencrypt-prod
+    spec:
+      acme:
+        # The ACME server URL
+        server: https://acme-v02.api.letsencrypt.org/directory
+        # Email address used for ACME registration
+        email: meine.email@gmail.com
+        # Name of a secret used to store the ACME account private key
+        privateKeySecretRef:
+          name: letsencrypt-prod-secret
+        # Enable the HTTP-01 challenge provider
+        solvers:
+        - http01:
+            ingress:
+              class: traefik
+
+Wichtig an dieser Stelle ist, dass man eine gültige E-Mail Adresse angibt, denn Let's Encrypt wird diese Adresse verwenden um bei Bedarf Mails zu versenden, zum Beispiel wenn ein Zertifikat kurz vor dem Ablaufen ist, aber der automatische Erneuerungs-Prozess noch nicht gelaufen ist.
+
+Nach dem Einspielen sehen wir zwei Ressourcen vom Typ "ClusterIssuer":
+
+    pi@raspberrypi:~ $ kubectl apply -f issuer.yaml
+    clusterissuer.cert-manager.io/letsencrypt-staging created
+    clusterissuer.cert-manager.io/letsencrypt-prod created
+    
+    pi@raspberrypi:~ $ kubectl get clusterissuer
+    NAME                  READY   AGE
+    letsencrypt-prod      True    2m8s
+    letsencrypt-staging   True    2m8s
+
+Um nun tatsächlich Zertifikate von Let's Encrypt ausgestellt zu bekommen, müssen wir unseren Ingress leicht anpassen (`cloud_ingress_tls.yaml`):
+
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: cloud-ingress
+      namespace: cloud
+      annotations:
+        kubernetes.io/ingress.class: "traefik"
+        cert-manager.io/cluster-issuer: letsencrypt-staging
+    spec:
+      rules:
+      - host: cloud.au-lab.de
+        http:
+          paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nextcloud
+                port:
+                  number: 80
+      tls:
+      - hosts:
+        - cloud.au-lab.de
+        secretName: cloud-tls
+
+Hier sind nur an zwei Stellen Änderungen gegenüber dem bisherigen Ingress notwendig:
+
+* Bei den Metadaten muss eine Annotation hinzugefügt werden: `cert-manager.io/cluster-issuer: letsencrypt-staging`
+* im unteren Bereich, unter `spec:` kommt nach dem Eintrag `rules:` noch der Teil ab `tls:...` hinzu
+
+Wir benutzen hier zuerst einmal den "Staging" Issuer, um ein Test-Zertifikat zu bekommen. Nach ein paar Sekunden bis Minuten sollte ein Refresh im Browser (eventuell in einem Inkognito Tab, da manche Browser die Zertifikate relativ lange zwischenspeichern) schon ein anderes Zertifikat anzeigen. Dieses ist zwar immer noch nicht gültig (er ist ja das Test-Zertifikat), allerdings zeigt das, dass das Anfordern und Installieren von Zertifikaten einwandfrei funktioniert.
+
+Als letzten Schritt stellen wir nun den Issuer von `letsencrypt-staging` auf `letsencrypt-prod` um. Dies kann durch einfaches Editieren der Annotation in obiger YAML Datei oder durch direktes Editieren des Ingresses mittels `kubectl -n cloud edit ingress/cloud-ingress` passieren.
+
+Nach einer kurzen Wartezeit sollte das Zertifikat dann ein offiziell als "sicher" anerkanntes sein.
+
+Sollte es wider Erwarten Fehler geben bei der Ausstellung der Zertifikate, so kann man sich die Kette an Kubernetes-Objekten der Reihe nach entlang hangeln (certificate -> request -> order -> challenge), um zu sehen wo das Problem liegt.
+
+    pi@raspberrypi:~ $ kubectl get certificates
+    NAME        READY   SECRET          AGE
+    cloud       False   cloud-tls       21s
+    
+    pi@raspberrypi:~ $ kubectl describe certificate cloud
+    ....
+    Events:
+      Type    Reason     Age   From          Message
+      ----    ------     ----  ----          -------
+      Normal  Issuing    34s   cert-manager  Issuing certificate as Secret does not exist
+      Normal  Generated  32s   cert-manager  Stored new private key in temporary Secret resource "cloud-m72zw"
+      Normal  Requested  32s   cert-manager  Created new CertificateRequest resource "cloud-b72sm"
+    
+    pi@raspberrypi:~ $ kubectl describe request cloud-b72sm
+    ...
+    Events:
+      Type    Reason        Age    From          Message
+      ----    ------        ----   ----          -------
+      Normal  OrderCreated  8m20s  cert-manager  Created Order resource cloud-tls-b72sm-1165244518
+    
+    pi@raspberrypi:~ $ kubectl describe order cloud-tls-b72sm-1165244518
+    ...
+    Events:
+      Type    Reason      Age   From          Message
+      ----    ------      ----  ----          -------
+      Normal  Created     72s   cert-manager  Created Challenge resource "cloud-439160286-0" for domain "cloud.au-lab.de"
+    
+    pi@raspberrypi:~ $ kubectl describe challenge cloud-439160286-0
+    ...
+    Status:
+      Presented:   true
+      Processing:  true
+      Reason:      Waiting for http-01 challenge propagation:
+                   failed to perform self check GET request 'http://cloud.au-lab.de/.well-known/acme-challenge/_fgdLz0i3TFiZW4LBjuhjgd5nTOkaMBhxYmTY':
+                   Get "http://cloud.au-lab.de/.well-known/acme-challenge/_fgdLz0i3TFiZW4LBjuhjgd5nTOkaMBhxYmTY: remote error: tls: handshake failure
+      State:       pending
 
