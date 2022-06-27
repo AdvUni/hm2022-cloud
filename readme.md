@@ -231,7 +231,7 @@ Wichtig, beim Löschen von Namespaces werden auch sämtliche Objekte innerhalb d
 
 Zu Hause hat man meist eine dynamische IP, was bedeutet dass man eigentlich regelmäßig (z.B. jede Stunde) die IP Adresse, auf die die DNS Domäne zeigt, aktualisieren muss. Dazu hat man klassischerweise einen cronjob benutzt, den man in Linux über die Datei `/etc/crontab` (oder eine Variante davon) konfiguriert.
 
-K8s unterstützt uns auch hierbei, so dass man nicht auf die Linux cron Konfiguration angewiesen ist. Dazu erzeugt man ein Objekt vom Typ `CronJob`:
+K8s unterstützt uns auch hierbei, so dass man nicht auf die Linux cron Konfiguration angewiesen ist. Dazu erzeugt man ein Objekt vom Typ *CronJob* (`dyndns.yaml`):
 
     apiVersion: batch/v1
     kind: CronJob
@@ -267,7 +267,7 @@ K8s unterstützt uns auch hierbei, so dass man nicht auf die Linux cron Konfigur
                 - wget -O - "${URL}?hostname=${SECRET_HOSTNAME}&password=${SECRET_PASSWORD}&ip=auto"
               restartPolicy: OnFailure
 
-Wir geben dem CronJob eine Schedule im standard UNIX Crontab Format mit, hier `13 * * * *`, was so viel bedeutet wie "13 Minuten nach jeder vollen Stunde". Außerdem definieren wir ein Pod-Template, welches der CronJob hernimmt um das tatsächliche Kommando auszuführen. Dazu dient hier ein BusyBox Container, dessen Standard-Kommando (eine Shell) durch einen Aufruf von `wget` ersetzt wird. Die Parameter für den Aufruf bekommen wir als Umgebungsvariable aus dem dazugehörigen Secret, welches wir folgendermaßen konfigurieren:
+Wir geben dem CronJob eine Schedule im standard UNIX Crontab Format mit, hier `13 * * * *`, was so viel bedeutet wie "13 Minuten nach jeder vollen Stunde". Außerdem definieren wir ein Pod-Template, welches der CronJob hernimmt um das tatsächliche Kommando auszuführen. Dazu dient hier ein BusyBox Container, dessen Standard-Kommando (eine Shell) durch einen Aufruf von `wget` ersetzt wird. Die Parameter für den Aufruf bekommen wir als Umgebungsvariable aus dem dazugehörigen Secret, welches wir folgendermaßen konfigurieren (`dyndns-secret.yaml`):
 
     apiVersion: v1
     kind: Secret
@@ -357,7 +357,7 @@ NextCloud besteht aus 2 Teilen, einem Frontend (Webserver, NextCloud Software, S
 
 Für die Datenbank im Backend von NextCloud verwenden wir MariaDB, und zwar in der Version 10.7, diese ist getestet und supported, und funktioniert mit NextCloud einwandfrei.
 
-Wir nutzen also folgendes Deployment, welches dafür sorgt dass immer genau ein MariaDB Pod im Cluster läuft (der Parameter `replicas: 1`):
+Wir nutzen also folgendes Deployment, welches dafür sorgt dass immer genau ein MariaDB Pod im Cluster läuft. Dazu dient der Parameter `replicas: 1` (`cloud_backend.yaml`):
 
     apiVersion: v1
     kind: Namespace
@@ -419,7 +419,7 @@ Wir nutzen also folgendes Deployment, welches dafür sorgt dass immer genau ein 
 
 Das Deployment bekommt die Metadaten `app: nextcloud` sowie `tier: backend` mit, über die wir nachher die Datenbank in einem Service addressieren können.
 Weiterhin geben wir dem Pod ein statisches Volume mit, welches auf unserem Host unter `/k8s-data/db` liegt; dort wird die Datenbank abgelegt, so dass sie auch einen Neustart des Pods überlebt.
-Der MariaDB Pod legt beim ersten Start auch gleich einen User an, dessen Passwort holen wir aus einem Secret, welches zusätzlich auch das root-Passwort für den SQL Dienst beinhaltet. Das Secret wird später auch im Frontend genutzt, um die Verbindung über den korrekten User herzustellen. Hier ist das YAML Manifest für das Secret:
+Der MariaDB Pod legt beim ersten Start auch gleich einen User an, dessen Passwort holen wir aus einem Secret, welches zusätzlich auch das root-Passwort für den SQL Dienst beinhaltet. Das Secret wird später auch im Frontend genutzt, um die Verbindung über den korrekten User herzustellen. Hier ist das YAML Manifest für das Secret (`cloud_secret.yaml`):
 
     apiVersion: v1
     kind: Secret
@@ -473,7 +473,7 @@ Somit bekommen wir spätestens jetzt ein Problem, wenn wir auf die Datenbank zug
 
 Dazu dienen in Kubernetes die sogenannten *Services*. Diese richten eine permanente IP ein, und sorgen dafür, dass alle Zugriffe auf diese IP an den dahinterliegenden Pod weitergereicht werden. Falls mehrere potenzielle Pods existieren sorgt der Service auch noch für ein Loadbalancing.
 
-Folgendes YAML Manifest definiert einen Service für unsere Datenbank im Backend:
+Folgendes YAML Manifest definiert einen Service für unsere Datenbank im Backend (`cloud_backend_service.yaml`):
 
     apiVersion: v1
     kind: Service
@@ -528,7 +528,7 @@ Man sieht dass sich hier zwar die IP des Pods ändert, die feste IP des Services
 
 Das Frontend ist ähnlich aufgebaut wie das Backend: Ein Deployment, welches einen einzelnen Pod mit dem korrekten NextCloud-Image verwaltet, sowie ein Service, der die HTTP Schnittstelle im Cluster verfügbar macht.
 
-Zuerst das Manifest des Deployments, welches über diverse Umgebungsvariablen (welche auf der [Homepage](https://hub.docker.com/_/nextcloud) beschrieben sind) konfiguriert wird:
+Zuerst das Manifest des Deployments, welches über diverse Umgebungsvariablen (welche auf der [Homepage](https://hub.docker.com/_/nextcloud) beschrieben sind) konfiguriert wird (`cloud_frontend.yaml`):
 
     apiVersion: apps/v1
     kind: Deployment
@@ -600,7 +600,7 @@ Man sieht hier, dass wir das Passwort für die Backend Datenbank aus dem gleiche
 
 Als Datenspeicherort wird hier `/k8s-data/nextcloud` gewählt, das Verzeichnis muss bereits existieren, sonst startet der Pod nicht.
 
-Der passende Service dazu selektiert nun den Container anhand der Metadaten `tier=frontend` sowie `app=nextcloud`:
+Der passende Service dazu selektiert nun den Container anhand der Metadaten `tier=frontend` sowie `app=nextcloud` (`cloud_frontend_service.yaml`):
 
     apiVersion: v1
     kind: Service
@@ -653,7 +653,7 @@ Man kann nun leicht prüfen, dass innerhalb des Clusters die NextCloud Webseite 
 
 Wir möchten das Frontend aber ja von außerhalb des Clusters zugreifbar machen. Dazu benötigen wir einen Ingress. Dieser gibt einen Service außerhalb des Clusters frei. Dafür nutzt er, je nach installierter k8s-Variante, einen bestimmten *Ingress-Controller*. Bei k3s ist dies *Traefik*.
 
-Dieses Manifest erstellt einen Ingress für unser Frontend:
+Dieses Manifest erstellt einen Ingress für unser Frontend (`cloud_ingress.yaml`):
 
     apiVersion: networking.k8s.io/v1
     kind: Ingress
