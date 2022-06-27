@@ -269,14 +269,14 @@ K8s unterstützt uns auch hierbei, so dass man nicht auf die Linux cron Konfigur
 
 Wir geben dem CronJob eine Schedule im standard UNIX Crontab Format mit, hier `13 * * * *`, was so viel bedeutet wie "13 Minuten nach jeder vollen Stunde". Außerdem definieren wir ein Pod-Template, welches der CronJob hernimmt um das tatsächliche Kommando auszuführen. Dazu dient hier ein BusyBox Container, dessen Standard-Kommando (eine Shell) durch einen Aufruf von `wget` ersetzt wird. Die Parameter für den Aufruf bekommen wir als Umgebungsvariable aus dem dazugehörigen Secret, welches wir folgendermaßen konfigurieren (`dyndns-secret.yaml`):
 
-    apiVersion: v1
-    kind: Secret
-    metadata:
-      namespace: dyndns
-      name: dyndns-secret
-    stringData:
-      hostname: cloud.au-lab.de
-      password: 1secret234!
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      namespace: dyndns
+      name: dyndns-secret
+    stringData:
+      hostname: cloud.au-lab.de
+      password: 1secret234!
 
 Via `kubectl apply` spielen wir die beiden Manifest-Dateien in den Cluster ein:
 
@@ -618,6 +618,7 @@ Der passende Service dazu selektiert nun den Container anhand der Metadaten `tie
         tier: frontend
 
 Das Einspielen der Manifests in den Cluster ist schnell getan:
+
     pi@raspberrypi:~ $ kubectl apply -f cloud_frontend.yaml 
     deployment.apps/nextcloud created
     pi@raspberrypi:~ $ kubectl apply -f cloud_frontend_service.yaml 
