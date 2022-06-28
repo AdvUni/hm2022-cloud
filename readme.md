@@ -45,7 +45,7 @@ Bei schwächeren Computern, wie z.B. auch dem Raspberry Pi, sollte man zusätzli
     pi@raspberrypi:~ $ sudo systemctl enable multi-user.target
     pi@raspberrypi:~ $ sudo systemctl set-default multi-user.target
 
-Außerdem ist es für k8s empfehlenswert, Swapping zu deaktivieren. Zum einen da k8s selbst schon die verfügbaren RAM Ressourcenfür die einzelnen Pods verwaltet und limitiert, zumn Anderen um die Lebensdauer der SD Karte zu erhöhen und die I/O Last auf der evtl. langsamen Festplatte zu verringern:
+Außerdem ist es für k8s empfehlenswert, Swapping zu deaktivieren. Zum einen da k8s selbst schon die verfügbaren RAM Ressourcenfür die einzelnen Pods verwaltet und limitiert, zum Anderen um die Lebensdauer der SD Karte zu erhöhen und die I/O Last auf der evtl. langsamen Festplatte zu verringern:
 
     pi@raspberrypi:~ $ sudo dphys-swapfile swapoff
     pi@raspberrypi:~ $ sudo dphys-swapfile uninstall
@@ -580,7 +580,7 @@ Zuerst das Manifest des Deployments, welches über diverse Umgebungsvariablen (w
             - name: TRUSTED_PROXIES
               value: 10.0.0.0/8
             name: nc
-            image: nextcloud
+            image: nextcloud:23
             ports:
             - containerPort: 80
               protocol: TCP
