@@ -690,9 +690,13 @@ Wir spielen dieses YAML Manifest in den Cluster ein:
 
 Nun können wir bereits über den Hostnamen von außen auf unsere NextCloud Instanz zugreifen.
 
-Interessant ist, dass sowohl HTTP als auch HTTPS schon funktionieren, da Traefik standardmäßig jeden Ingress nicht auch auf Port 443 publiziert, allerdings mit einem selbstsignierten Zertifikat.
+Interessant ist, dass sowohl HTTP als auch HTTPS schon funktionieren, da Traefik standardmäßig jeden Ingress nicht auch auf Port 443 publiziert, allerdings mit einem selbstsignierten Zertifikat:
 
-Ein Zugriff über die IP Adresse ist hingegen nicht möglich, da wir dafür im Ingress keine Regel hinterlegt haben. Daher bekommen wir hier nur die Standard-Fehlerseite von Traefik angezeigt.
+![Default Zertifikat](/images/nextcloud_default_cert.png)
+
+Ein Zugriff über die IP Adresse ist hingegen nicht möglich, da wir dafür im Ingress keine Regel hinterlegt haben. Daher bekommen wir hier nur die Standard-Fehlerseite von Traefik angezeigt:
+
+![HTTP 404](/images/http_404.png)
 
 ## Absicherung per Let's Encrypt
 
@@ -804,9 +808,13 @@ Hier sind nur an zwei Stellen Änderungen gegenüber dem bisherigen Ingress notw
 
 Wir benutzen hier zuerst einmal den "Staging" Issuer, um ein Test-Zertifikat zu bekommen. Nach ein paar Sekunden bis Minuten sollte ein Refresh im Browser (eventuell in einem Inkognito Tab, da manche Browser die Zertifikate relativ lange zwischenspeichern) schon ein anderes Zertifikat anzeigen. Dieses ist zwar immer noch nicht gültig (er ist ja das Test-Zertifikat), allerdings zeigt das, dass das Anfordern und Installieren von Zertifikaten einwandfrei funktioniert.
 
+![Staging Zertifikat](/images/nextcloud_letsencrypt_staging.png)
+
 Als letzten Schritt stellen wir nun den Issuer von `letsencrypt-staging` auf `letsencrypt-prod` um. Dies kann durch einfaches Editieren der Annotation in obiger YAML Datei oder durch direktes Editieren des Ingresses mittels `kubectl -n cloud edit ingress/cloud-ingress` passieren.
 
 Nach einer kurzen Wartezeit sollte das Zertifikat dann ein offiziell als "sicher" anerkanntes sein.
+
+![Prod Zertifikat](/images/nextcloud_letsencrypt_prod.png)
 
 Sollte es wider Erwarten Fehler geben bei der Ausstellung der Zertifikate, so kann man sich die Kette an Kubernetes-Objekten der Reihe nach entlang hangeln (certificate -> request -> order -> challenge), um zu sehen wo das Problem liegt.
 
