@@ -19,10 +19,10 @@ In diesem Sinne: Viel Spaß
 Wir brauchen:
 - Einen RaspberryPi oder (gerne auch älteren) PC/Laptop
 - Ein relativ aktuelles Linux. Die Distribution ist dabei egal, wobei in diesem Dokument von einer Ubuntu-artigen Distribution ausgegangen wird. Die Kommandos zur Paket-Installation oder zum Dienste-Management müssen bei Bedarf auf die verwendete Distribution angepasst werden.
-- Eine Internet-Verbindung
-- Eine feste IP im LAN, am besten über Kabel (weil einfacher und meist bessere Verbindung)
+- Eine Internetverbindung
+- Eine feste IP im LAN, am besten über Kabel (weil einfacher zu konnfigurieren und meist bessere Verbindung)
 - Eine DNS Domäne, z.B. von domaindiscount24.com o.ä.
-- Ein Router im Heim-LAN, welcher Port-Forwarding beherrscht
+- Ein Router im Heim-LAN, welcher Port-Forwarding beherrscht (sollten so ziemlich alle Router können)
 - Eine (externe) Festplatte oder ausreichend großen USB Stick für die Daten
 
 ## Installation Linux
@@ -45,7 +45,7 @@ Bei schwächeren Computern, wie z.B. auch dem Raspberry Pi, sollte man zusätzli
     pi@raspberrypi:~ $ sudo systemctl enable multi-user.target
     pi@raspberrypi:~ $ sudo systemctl set-default multi-user.target
 
-Außerdem ist es für k8s empfehlenswert, Swapping zu deaktivieren. Zum einen da k8s selbst schon die verfügbaren RAM Ressourcenfür die einzelnen Pods verwaltet und limitiert, zum Anderen um die Lebensdauer der SD Karte zu erhöhen und die I/O Last auf der evtl. langsamen Festplatte zu verringern:
+Außerdem ist es für k8s empfehlenswert, Swapping zu deaktivieren. Zum einen da k8s selbst schon die verfügbaren RAM Ressourcen für die einzelnen Pods verwaltet und limitiert, zum Anderen um die Lebensdauer der SD Karte zu erhöhen und die I/O Last auf der evtl. langsamen Festplatte zu verringern:
 
     pi@raspberrypi:~ $ sudo dphys-swapfile swapoff
     pi@raspberrypi:~ $ sudo dphys-swapfile uninstall
@@ -80,7 +80,7 @@ Aufgrund eines Bugs in einigen älteren Versionen des `iptables` Tools sollte di
 
     pi@raspberrypi:~ $ iptables --version
     iptables v1.8.2 (nf_tables)
-    pi@raspberrypi:~ $ sudo apt-get remove -y iptables nftables
+    pi@raspberrypi:~ $ sudo apt-get purge -y iptables nftables
     pi@raspberrypi:~ $ iptables --version
     bash: iptables: command not found
 
@@ -92,7 +92,7 @@ Als letzten Schritt machen wir einen Reboot um sicherzustellen dass anschließen
 
 Nun konfigurieren wir den Router, so dass Anfragen aus dem Internet auf port 80 (für HTTP) und 443 (für HTTPS) an unseren RaspberryPi weitergeleitet werden. Die Umleitung von Port 80 kann später auch wieder entfernt werden, zum Testen ist diese aber sehr hilfreich.
 
-Wie die Konfiguration auf dem Router durchgeführt werden muss ist vom Router-Modell abhängig. Im Zweifelsfall hilft hier eine Internet-Suche oder die Dokumentation weiter. Bei einem SpeedPort Neo sieht das entsprechende Menü folgendermaßen aus:
+Wie die Konfiguration auf dem Router durchgeführt werden muss ist vom Router-Modell abhängig. Im Zweifelsfall hilft hier eine Internet-Suche oder die Dokumentation weiter. Auch die Webseite https://portforward.com ist oft hilfreich. Bei einem SpeedPort Neo sieht das entsprechende Menü folgendermaßen aus:
 
 ![Port Forwarding](images/speedport_neo.png)
 
@@ -182,7 +182,7 @@ Man sollte nun auch einmal den integrierten Check durchlaufen lassen, der einen 
     ...
     STATUS: pass
 
-Falls dort rot markierte Meldungen auftauchen sollte man diese korrigieren/anpassen (Google hilft im Zweifelsfall). Gelbe Warnungen können ignoriert werden, wichtig ist dass am Ende `pass` auftaucht.
+Falls dort rot markierte Meldungen auftauchen sollte man diese korrigieren/anpassen (Google hilft im Zweifelsfall). Gelbe Warnungen können ignoriert werden, wichtig ist dass am Ende `STATUS: pass` auftaucht.
 
 ## Kubernetes Grundlagen
 
@@ -339,7 +339,7 @@ Um zu überprüfen ob der Job sauber ausgeführt wurde können wir ihn mit `kube
     runtime = 0.099
     EOF
 
-Im Output sehen wir die Rückmeldung des API Servers unseres DNS Providers, das IP Update lief also problemlos durch.
+Im Output sehen wir die Rückmeldung des API Servers unseres DNS Providers, das IP Update lief also ohne Fehler durch.
 
 Der Cronjob bewahrt außerdem die letzten 3 Jobs auf bevor deren Pods gelöscht werden, so dass man auch noch von älteren Jobs die Logs ansehen kann. Diese sieht man mit `kubectl get job`:
 
@@ -854,4 +854,24 @@ Sollte es wider Erwarten Fehler geben bei der Ausstellung der Zertifikate, so ka
                    failed to perform self check GET request 'http://cloud.au-lab.de/.well-known/acme-challenge/_fgdLz0i3TFiZW4LBjuhjgd5nTOkaMBhxYmTY':
                    Get "http://cloud.au-lab.de/.well-known/acme-challenge/_fgdLz0i3TFiZW4LBjuhjgd5nTOkaMBhxYmTY: remote error: tls: handshake failure
       State:       pending
+
+## Updates
+
+Updates sind auch denkbar einfach. Durch Anpassung des Tags im Manifest des Deployments kann man einfach auf eine neue Version wechseln.
+
+Zum Beispiel im `cloud_backend.yaml`
+
+    apiVersion: v1
+    ...
+    spec:
+      ...
+      template:
+        ...
+        spec:
+          containers:
+          - name: mariadb
+            image: mariadb:10.8    # <-- Änderung der Version hier
+          ...
+
+Anschließend kann einfach mit `kubectl apply -f cloud_backend.yaml` die Version upgedated werden. Da dazu erst das Image heruntergeladen werden muss, kann dies ein paar Minuten dauern.
 
